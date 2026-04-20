@@ -1,15 +1,20 @@
 const STORAGE_KEY = "targetLanguage";
 const DEFAULT_LANGUAGE = "es";
+const PERSISTED_CACHE_KEY = "translationCacheV1";
 const MIN_TEXT_LENGTH = 8;
-const HOVER_DELAY_MS = 320;
+const HOVER_DELAY_MS = 180;
 const REQUEST_DEBOUNCE_MS = 100;
+const LOADING_TOOLTIP_DELAY_MS = 140;
+const MAX_PERSISTED_CACHE_ENTRIES = 250;
 const TOOLTIP_OFFSET_X = 14;
 const TOOLTIP_OFFSET_Y = 18;
 
 const translationCache = new Map();
+const inFlightTranslations = new Map();
 let targetLanguage = DEFAULT_LANGUAGE;
 let hoverTimer = null;
 let requestTimer = null;
+let loadingTimer = null;
 let lastSentence = "";
 let mouseX = 0;
 let mouseY = 0;
@@ -22,6 +27,20 @@ chrome.storage.sync.get({ [STORAGE_KEY]: DEFAULT_LANGUAGE }, (result) => {
   targetLanguage = result[STORAGE_KEY] || DEFAULT_LANGUAGE;
 });
 
+chrome.storage.local.get({ [PERSISTED_CACHE_KEY]: {} }, (result) => {
+  const persisted = result[PERSISTED_CACHE_KEY];
+  if (!persisted || typeof persisted !== "object") {
+    return;
+  }
+
+  for (const [cacheKey, value] of Object.entries(persisted)) {
+    if (!value || typeof value.text !== "string") {
+      continue;
+    }
+    translationCache.set(cacheKey, value.text);
+  }
+});
+
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "sync" || !changes[STORAGE_KEY]) {
     return;
@@ -31,6 +50,10 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 });
 
 function hideTooltip() {
+  if (loadingTimer) {
+    clearTimeout(loadingTimer);
+    loadingTimer = null;
+  }
   tooltip.classList.remove("show");
   tooltip.textContent = "";
 }
@@ -132,29 +155,76 @@ async function translate(text, language) {
     return translationCache.get(cacheKey);
   }
 
+  if (inFlightTranslations.has(cacheKey)) {
+    return inFlightTranslations.get(cacheKey);
+  }
+
   const url =
     "https://translate.googleapis.com/translate_a/single" +
     `?client=gtx&sl=auto&tl=${encodeURIComponent(language)}&dt=t&q=${encodeURIComponent(text)}`;
 
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Translate request failed with ${response.status}`);
+  const translationPromise = (async () => {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Translate request failed with ${response.status}`);
+    }
+
+    const data = await response.json();
+    const translated = Array.isArray(data?.[0])
+      ? data[0]
+          .map((chunk) => (Array.isArray(chunk) ? chunk[0] : ""))
+          .join("")
+          .trim()
+      : "";
+
+    if (!translated) {
+      throw new Error("No translation returned");
+    }
+
+    translationCache.set(cacheKey, translated);
+    persistTranslationCache(cacheKey, translated);
+    return translated;
+  })();
+
+  inFlightTranslations.set(cacheKey, translationPromise);
+  try {
+    return await translationPromise;
+  } finally {
+    inFlightTranslations.delete(cacheKey);
   }
+}
 
-  const data = await response.json();
-  const translated = Array.isArray(data?.[0])
-    ? data[0]
-        .map((chunk) => (Array.isArray(chunk) ? chunk[0] : ""))
-        .join("")
-        .trim()
-    : "";
+function persistTranslationCache(cacheKey, text) {
+  chrome.storage.local.get({ [PERSISTED_CACHE_KEY]: {} }, (result) => {
+    const persisted = result[PERSISTED_CACHE_KEY];
+    const next = persisted && typeof persisted === "object" ? { ...persisted } : {};
+    next[cacheKey] = { text, t: Date.now() };
 
-  if (!translated) {
-    throw new Error("No translation returned");
+    const entries = Object.entries(next);
+    if (entries.length > MAX_PERSISTED_CACHE_ENTRIES) {
+      entries.sort((a, b) => (a[1]?.t || 0) - (b[1]?.t || 0));
+      const excess = entries.length - MAX_PERSISTED_CACHE_ENTRIES;
+      for (let i = 0; i < excess; i += 1) {
+        delete next[entries[i][0]];
+      }
+    }
+
+    chrome.storage.local.set({ [PERSISTED_CACHE_KEY]: next });
+  });
+}
+
+function getCachedTranslation(text, language) {
+  const cacheKey = `${language}::${text}`;
+  return translationCache.get(cacheKey) || "";
+}
+
+function showLoadingTooltip(x, y) {
+  if (loadingTimer) {
+    clearTimeout(loadingTimer);
   }
-
-  translationCache.set(cacheKey, translated);
-  return translated;
+  loadingTimer = setTimeout(() => {
+    showTooltip("Translating...", x, y);
+  }, LOADING_TOOLTIP_DELAY_MS);
 }
 
 function showTooltip(text, x, y) {
@@ -205,7 +275,13 @@ document.addEventListener(
       }
 
       lastSentence = sentence;
-      showTooltip("Translating...", mouseX, mouseY);
+      const cachedTranslation = getCachedTranslation(sentence, targetLanguage);
+      if (cachedTranslation) {
+        showTooltip(cachedTranslation, mouseX, mouseY);
+        return;
+      }
+
+      showLoadingTooltip(mouseX, mouseY);
       queueTranslation(sentence);
     }, HOVER_DELAY_MS);
   },
