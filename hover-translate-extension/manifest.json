@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "Hover Translate Tooltip",
+  "version": "0.1.0",
+  "description": "Translate hovered sentences into your chosen language with a lightweight tooltip.",
+  "permissions": ["storage"],
+  "host_permissions": ["https://translate.googleapis.com/*"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Hover Translate"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
