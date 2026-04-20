@@ -1,5 +1,7 @@
 const STORAGE_KEY = "targetLanguage";
 const DEFAULT_LANGUAGE = "es";
+const ENABLED_KEY = "translationEnabled";
+const DEFAULT_ENABLED = true;
 const PERSISTED_CACHE_KEY = "translationCacheV1";
 const MIN_TEXT_LENGTH = 8;
 const HOVER_DELAY_MS = 180;
@@ -18,13 +20,15 @@ let loadingTimer = null;
 let lastSentence = "";
 let mouseX = 0;
 let mouseY = 0;
+let isTranslationEnabled = true;
+let requestSequence = 0;
 
 const tooltip = document.createElement("div");
 tooltip.className = "hover-translate-tooltip";
 document.documentElement.appendChild(tooltip);
-
-chrome.storage.sync.get({ [STORAGE_KEY]: DEFAULT_LANGUAGE }, (result) => {
+chrome.storage.sync.get({ [STORAGE_KEY]: DEFAULT_LANGUAGE, [ENABLED_KEY]: DEFAULT_ENABLED }, (result) => {
   targetLanguage = result[STORAGE_KEY] || DEFAULT_LANGUAGE;
+  isTranslationEnabled = result[ENABLED_KEY] ?? DEFAULT_ENABLED;
 });
 
 chrome.storage.local.get({ [PERSISTED_CACHE_KEY]: {} }, (result) => {
@@ -42,11 +46,16 @@ chrome.storage.local.get({ [PERSISTED_CACHE_KEY]: {} }, (result) => {
 });
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName !== "sync" || !changes[STORAGE_KEY]) {
+  if (areaName !== "sync") {
     return;
   }
-  targetLanguage = changes[STORAGE_KEY].newValue || DEFAULT_LANGUAGE;
-  hideTooltip();
+  if (changes[STORAGE_KEY]) {
+    targetLanguage = changes[STORAGE_KEY].newValue || DEFAULT_LANGUAGE;
+    hideTooltip();
+  }
+  if (changes[ENABLED_KEY]) {
+    setTranslationEnabled(Boolean(changes[ENABLED_KEY].newValue));
+  }
 });
 
 function hideTooltip() {
@@ -56,6 +65,17 @@ function hideTooltip() {
   }
   tooltip.classList.remove("show");
   tooltip.textContent = "";
+}
+
+function setTranslationEnabled(nextEnabled) {
+  isTranslationEnabled = nextEnabled;
+  requestSequence += 1;
+  lastSentence = "";
+  hideTooltip();
+  if (requestTimer) {
+    clearTimeout(requestTimer);
+    requestTimer = null;
+  }
 }
 
 function positionTooltip(x, y) {
@@ -238,10 +258,14 @@ function queueTranslation(sentence) {
     clearTimeout(requestTimer);
   }
 
+  const currentRequest = requestSequence;
   requestTimer = setTimeout(async () => {
+    if (!isTranslationEnabled || currentRequest !== requestSequence) {
+      return;
+    }
     try {
       const translated = await translate(sentence, targetLanguage);
-      if (lastSentence === sentence) {
+      if (isTranslationEnabled && currentRequest === requestSequence && lastSentence === sentence) {
         showTooltip(translated, mouseX, mouseY);
       }
     } catch (_) {
@@ -255,6 +279,11 @@ document.addEventListener(
   (event) => {
     mouseX = event.clientX;
     mouseY = event.clientY;
+
+    if (!isTranslationEnabled) {
+      hideTooltip();
+      return;
+    }
 
     if (hoverTimer) {
       clearTimeout(hoverTimer);
@@ -289,8 +318,3 @@ document.addEventListener(
 );
 
 document.addEventListener("scroll", hideTooltip, { passive: true });
-document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") {
-    hideTooltip();
-  }
-});

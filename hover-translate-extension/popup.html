@@ -29,6 +29,25 @@
         border: 1px solid #8885;
         font-size: 14px;
       }
+      .controls {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .status {
+        font-size: 12px;
+        opacity: 0.8;
+      }
+      button {
+        border: 1px solid #8885;
+        background: #222;
+        color: #fff;
+        border-radius: 8px;
+        font-size: 12px;
+        padding: 6px 10px;
+        cursor: pointer;
+      }
       .hint {
         margin: 4px 0 0;
         font-size: 12px;
@@ -52,6 +71,10 @@
         <option value="hi">Hindi</option>
         <option value="ar">Arabic</option>
       </select>
+      <div class="controls">
+        <span class="status" id="statusText">Status: Running</span>
+        <button id="toggleTranslation" type="button">Pause</button>
+      </div>
       <p class="hint">Hover over a sentence on any page to see a quick translation tooltip.</p>
     </div>
     <script src="popup.js"></script>
